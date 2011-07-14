@@ -1025,7 +1025,7 @@ def input_file(filename):
     """
     if options.verbose:
         message('checking ' + filename)
-    errors = Checker(filename).check_all()
+    return Checker(filename).check_all()
 
 
 def input_dir(dirname, runner=None):
