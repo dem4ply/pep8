@@ -126,7 +126,7 @@ WHITESPACE_AROUND_OPERATOR_REGEX = \
 EXTRANEOUS_WHITESPACE_REGEX = re.compile(r'[[({] | []}),;:]')
 WHITESPACE_AROUND_NAMED_PARAMETER_REGEX = \
     re.compile(r'[()]|\s=[^=]|[^=!<>]=\s')
-
+GOOD_MODULE_REGEX = re.compile(r'^[_a-z][_a-z0-9]*$')
 
 WHITESPACE = ' \t'
 
@@ -389,6 +389,30 @@ def indentation(logical_line, previous_logical, indent_char,
         return 0, "E112 expected an indented block"
     if indent_level > previous_indent_level and not indent_expect:
         return 0, "E113 unexpected indentation"
+
+
+def module_naming(module_name):
+    """
+    Package and Module Names
+
+    Modules should have short, all-lowercase names.  Underscores can be used
+    in the module name if it improves readability.  Python packages should
+    also have short, all-lowercase names, although the use of underscores is
+    discouraged.
+
+    Since module names are mapped to file names, and some file systems are
+    case insensitive and truncate long names, it is important that module
+    names be chosen to be fairly short -- this won't be a problem on Unix,
+    but it may be a problem when the code is transported to older Mac or
+    Windows versions, or DOS.
+
+    When an extension module written in C or C++ has an accompanying Python
+    module that provides a higher level (e.g. more object oriented)
+    interface, the C/C++ module has a leading underscore (e.g. _socket).
+
+    """
+    if GOOD_MODULE_REGEX.match(module_name) is None:
+        return 0, "E802 bad module name"
 
 
 def whitespace_before_parameters(logical_line, tokens):
@@ -1048,13 +1072,21 @@ class Checker(object):
         self.tokens = []
         parens = 0
 
+        # Module visitor checker
+        for _name, module_name_checker, _args in options.module_name_checks:
+            module_name = os.path.basename(self.filename).replace('.py', '')
+            res = module_name_checker(module_name)
+            if res is not None:
+                lineno, errtxt = res
+                self.report_error(lineno, 0, errtxt, module_name_checker)
+
         # AST visitor checker
         try:
             t = compiler.parse(''.join(self.lines))
         except:  # parse error, let other checkers handle it
             pass
         else:
-            compiler.walk(t, self.visitor, verbose=10)
+            compiler.walk(t, self.visitor)
             for lineno, offset, err_txt, check in self.visitor.errors:
                 self.report_error(lineno, offset, err_txt, check)
 
@@ -1482,6 +1514,7 @@ def process_options(arglist=None):
         options.ignore = DEFAULT_IGNORE.split(',')
     options.physical_checks = find_checks('physical_line')
     options.logical_checks = find_checks('logical_line')
+    options.module_name_checks = find_checks('module_name')
     options.visitor_checks = find_visitor_checks()
     options.counters = dict.fromkeys(BENCHMARK_KEYS, 0)
     options.messages = {}
