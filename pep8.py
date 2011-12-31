@@ -766,9 +766,7 @@ class FunctionNamingVisitor(object):
     def visitFunction(self, node):
         if self.GOOD_FUNCTION_NAME.match(node.name) is None:
             return (node.lineno, 1,
-                    "E801 function names should be lowercase, with words "
-                    "separated by underscores as necessary to improve "
-                    "readability")
+                    "E801 function name does not follow PEP8 guidelines")
 
 
 class ClassNamingVisitor(object):
