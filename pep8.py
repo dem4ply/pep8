@@ -720,9 +720,9 @@ def python_3000_backticks(logical_line):
 ##############################################################################
 
 
-class VariableNamingVisitor(object):
+class NamesToAvoidNamingVisitor(object):
     """
-    PEP8 explicitly calls out several variables that should be avoided
+    PEP8 explicitly calls out several names that should be avoided
 
     Names to avoid:
     Never used the characters 'l' (lowercase letter el), 'O' (uppercase letter
@@ -736,7 +736,7 @@ class VariableNamingVisitor(object):
     W810: I = "the letter eye"
     """
 
-    def visitAssName(self, node):
+    def _check_name(self, node):
         if node.name == "l":
             return node.lineno, 1, ("E810 Variables with the single letter "
                                     "'l' (el) should be avoided")
@@ -746,6 +746,17 @@ class VariableNamingVisitor(object):
         elif node.name == "I":
             return node.lineno, 1, ("E810 Variables with the single letter "
                                     "'I' (eye) should be avoided")
+        else:
+            return None
+
+    def visitFunction(self, node):
+        return self._check_name(node)
+
+    def visitAssName(self, node):
+        return self._check_name(node)
+
+    def visitClassName(self, node):
+        return self._check_name(node)
 
 
 class FunctionNamingVisitor(object):
