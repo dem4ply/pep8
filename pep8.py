@@ -42,6 +42,7 @@ W warnings
 500 line length
 600 deprecation
 700 statements
+800 naming conventions
 
 You can add checks to this program by writing plugins. Each plugin is
 a simple function that is called for each line of source code, either
@@ -94,15 +95,17 @@ for space.
 
 __version__ = '0.5.1dev'
 
-import os
-import sys
-import re
-import time
+from compiler.visitor import ASTVisitor
+from fnmatch import fnmatch
+from optparse import OptionParser
+import compiler
 import inspect
 import keyword
+import os
+import re
+import sys
+import time
 import tokenize
-from optparse import OptionParser
-from fnmatch import fnmatch
 try:
     frozenset
 except NameError:
@@ -711,6 +714,76 @@ def python_3000_backticks(logical_line):
     if pos > -1:
         return pos, "W604 backticks are deprecated, use 'repr()'"
 
+##############################################################################
+# AST Visitor Checkers
+##############################################################################
+
+
+class VariableNamingVisitor(object):
+    """
+    PEP8 explicitly calls out several variables that should be avoided
+
+    Names to avoid:
+    Never used the characters 'l' (lowercase letter el), 'O' (uppercase letter
+    oh), or 'I' (uppercase letter eye) as single character variable names.
+
+    In some fonts, these characters are indistinguishable from the numerals
+    one and zero.  When tempted to use 'l', use 'L' instead.
+
+    W810: l = "the letter el"
+    W810: O = "the letter oh"
+    W810: I = "the letter eye"
+    """
+
+    def visitAssName(self, node):
+        if node.name == "l":
+            return node.lineno, 1, ("E810 Variables with the single letter "
+                                    "'l' (el) should be avoided")
+        elif node.name == "O":
+            return node.lineno, 1, ("E810 Variables with the single letter "
+                                    "'O' (oh) should be avoided")
+        elif node.name == "I":
+            return node.lineno, 1, ("E810 Variables with the single letter "
+                                    "'I' (eye) should be avoided")
+
+
+class FunctionNamingVisitor(object):
+    """
+    Function names should be lowercase, with words separated by underscores
+    as necessary to improve readability.
+
+    mixedCase is allowed only in contexts where that's already the
+    prevailing style (e.g. threading.py), to retain backwards compatibility.
+
+    Ironically, pep8.py has a few of these non-pep8 function names as a
+    result of the standard library (visitor callbacks).
+
+    """
+
+    GOOD_FUNCTION_NAME = re.compile(r"^[_a-z][_a-z0-9]*$")
+
+    def visitFunction(self, node):
+        if self.GOOD_FUNCTION_NAME.match(node.name) is None:
+            return (node.lineno, 1,
+                    "E801 function names should be lowercase, with words "
+                    "separated by underscores as necessary to improve "
+                    "readability")
+
+
+class ClassNamingVisitor(object):
+    """
+    Almost without exception, class names use the CapWords convention.
+
+    Classes for internal use have a leading underscore in addition.
+    """
+
+    GOOD_CLASS_NAME = re.compile(r"^[_A-Z][a-zA-Z0-9]*$")
+
+    def visitClass(self, node):
+        if self.GOOD_CLASS_NAME.match(node.name) is None:
+            return (node.lineno, 1,
+                    "E800 class names should used CapWords convention")
+
 
 ##############################################################################
 # Helper functions
@@ -813,6 +886,19 @@ def find_checks(argument_name):
     return checks
 
 
+def find_visitor_checks():
+    """
+    Find all globally visible classes where the name endswith 'Visitor'
+    """
+    visitor_classes = []
+    for name, obj in globals().items():
+        if not inspect.isclass(obj):
+            continue
+        if name.endswith('Visitor'):
+            visitor_classes.append(obj)
+    return visitor_classes
+
+
 class Checker(object):
     """
     Load a Python source file, tokenize it, check coding style.
@@ -827,6 +913,7 @@ class Checker(object):
             self.lines = readlines(filename)
         else:
             self.lines = lines
+        self.visitor = VisitorChecker(options.visitor_checks)
         options.counters['physical lines'] += len(self.lines)
 
     def readline(self):
@@ -950,6 +1037,17 @@ class Checker(object):
         self.blank_lines_before_comment = 0
         self.tokens = []
         parens = 0
+
+        # AST visitor checker
+        try:
+            t = compiler.parse(''.join(self.lines))
+        except:  # parse error, let other checkers handle it
+            pass
+        else:
+            compiler.walk(t, self.visitor, verbose=10)
+            for lineno, offset, err_txt, check in self.visitor.errors:
+                self.report_error(lineno, offset, err_txt, check)
+
         for token in tokenize.generate_tokens(self.readline_check_physical):
             if options.verbose >= 3:
                 if token[2][0] == token[3][0]:
@@ -1016,6 +1114,57 @@ class Checker(object):
                 message(' ' * offset + '^')
             if options.show_pep8:
                 message(check.__doc__.lstrip('\n').rstrip())
+
+
+class VisitorChecker(ASTVisitor):
+    """
+    AST Visitor that pulls together individual AST checkers
+
+    The VisitorChecker takes in other Visitor classes and delegates
+    checking to each of these other checkers in a defined order when
+    visitor methods are called on this visitor.  This allows us to
+    use a plugin strategy without having to do more than a single
+    pass on the AST.
+    """
+
+    def __init__(self, visitor_classes):
+        ASTVisitor.__init__(self)
+        self.visitor = self
+        self.visitors = []
+        self.errors = []  # lineno, offset, errortext, check tuples
+        for visitor_cls in visitor_classes:
+            self.visitors.append(visitor_cls())
+
+    def __getattr__(self, name):
+        # if any of the encapsulated visitor classes have the
+        # request key and the key appears to be a 'visitor*'
+        # method, then return a function that will call each
+        # visitor method with the same name
+        visitor_callbacks = []
+        for visitor in self.visitors:
+            visitor_callback = getattr(visitor, name, None)
+            if visitor_callback is not None:
+                visitor_callbacks.append(visitor_callback)
+
+        if len(visitor_callbacks) > 0:
+            # assumption: visitor function will not raise exceptions
+            def _aggregate_visitor(*args, **kwargs):
+                node = args[0]
+                args = args[1:]
+                for visitor_callback in visitor_callbacks:
+                    err = visitor_callback(node, *args)
+                    if err is not None:
+                        if sys.version[0] == 2 and sys.version[1] < 6:
+                            instance = visitor_callback.im_self
+                        else:
+                            instance = visitor_callback.__self__
+                        lineno, offset, error_text = err
+                        self.errors.append(
+                          (lineno, offset, error_text, instance))
+                    self.default(node, *args)
+            return _aggregate_visitor
+        else:
+            raise AttributeError
 
 
 def input_file(filename):
@@ -1319,6 +1468,7 @@ def process_options(arglist=None):
         options.ignore = DEFAULT_IGNORE.split(',')
     options.physical_checks = find_checks('physical_line')
     options.logical_checks = find_checks('logical_line')
+    options.visitor_checks = find_visitor_checks()
     options.counters = dict.fromkeys(BENCHMARK_KEYS, 0)
     options.messages = {}
     return options, args
